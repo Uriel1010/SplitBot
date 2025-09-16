@@ -44,9 +44,8 @@ log = logging.getLogger("splitbot")
 log_currency = logging.getLogger("splitbot.currency")
 log_ai = logging.getLogger("splitbot.ai")
 
+# Core constants (must appear before translation dict which references them)
 EPS = 0.01
-
-
 DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "USD").upper()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
@@ -59,7 +58,7 @@ if AI_ENABLED:
         logging.warning("Failed to configure Gemini: %s", e)
         AI_ENABLED = False
 
-# Categories & synonyms
+# Categories & emojis
 CATEGORIES = [
     "food", "groceries", "transport", "entertainment", "travel", "utilities", "health", "rent", "other"
 ]
@@ -97,16 +96,17 @@ PENDING_NAMES: Dict[int, int] = {}  # chat_id -> user_id awaiting name text
 PAGE_SIZE = 10
 
 # Hebrew localization flag (always true for now)
-HE_IL = True
+# Hebrew localization flag (legacy global, now overridden per chat via /lang)
+HE_IL = True  # will be updated dynamically when /lang used
 
-# Translation dictionary (basic static mapping)
+"# Translation dictionary (basic static mapping)"
 T = {
     "start": "👋 היי! אני הבוט לפיצול הוצאות. כתוב /help כדי לראות פקודות.",
     "help": (
         "📘 פקודות קיימות:\n"
         "ℹ️ /help - עזרה זו.\n"
-        "� /start - הודעת פתיחה.\n"
-        "�💱 /setcurrency [ISO3] - קביעת מטבע לפני הוצאה ראשונה.\n"
+        "🚀 /start - הודעת פתיחה.\n"
+        "� /setcurrency [ISO3] - קביעת מטבע לפני הוצאה ראשונה.\n"
         "💰 /currency - הצגת המטבע הנוכחי.\n"
         "➕ /add <סכום> [ISO3] <תיאור> - הוספת הוצאה.\n"
         "🧑‍🤝‍🧑 /adduser [שם] - הוספת משתתף וירטואלי או שמך.\n"
@@ -117,6 +117,7 @@ T = {
         "🏷️ /categories - רשימת קטגוריות.\n"
         "📊 /stats - סיכום לפי קטגוריה.\n"
         "📤 /export - יצוא CSV.\n"
+        "🌐 /lang - החלפת שפה (עברית/English).\n"
         "♻️ /reset - איפוס מוחק הכל.\n"
         "✍️ טקסט חופשי (למשל: '120 שח על מצות') יוצר הוצאה ממתינה לאישור.\n"
         "(מטבע נוכחי: {currency})" + ("\n🤖 ניתוח AI פעיל." if AI_ENABLED else "\n🤖 ניתוח AI כבוי (חסר GEMINI_API_KEY).")
@@ -385,6 +386,8 @@ def load_chat(chat_id: int) -> Dict[str, Any]:
         data["currency"] = DEFAULT_CURRENCY
     if "virtual_seq" not in data:
         data["virtual_seq"] = -1
+    if "language" not in data:
+        data["language"] = "he"
     return data
 
 
@@ -453,38 +456,61 @@ def greedy_settlement(balances: Dict[str, float]) -> List[Dict[str, Any]]:
 async def start(update, context):
     chat_id = update.message.chat.id
     data = load_chat(chat_id)
-    text = T["start"] if HE_IL else "Hi! Use /help for commands."
+    lang = data.get("language", "he")
+    he = (lang == "he")
+    text = T["start"] if he else "👋 Hi! I'm the expense split bot. Type /help to see commands."
     if not data["users"]:
-        text += "\n" + T["prompt_adduser"]
+        text += "\n" + (T["prompt_adduser"] if he else "No participants yet. Use /adduser to add your name.")
     await update.message.reply_text(text, disable_notification=True)
-
-
-HELP_TEXT = T["help"] if HE_IL else (
-    "Available commands:\n"
-    "/help - this help\n"
-    "/start - welcome message\n"
-    "/setcurrency [ISO3] - set base currency (before first expense)\n"
-    "/currency - show current base currency\n"
-    "/add <amount> [ISO3] <description> - add expense (optional foreign currency)\n"
-    "/adduser [name] - add a virtual participant or set your display name\n"
-    "/users - list participants\n"
-    "/list [page] - paginated expenses (navigate with arrows)\n"
-    "/bal - weighted balances\n"
-    "/settle - suggested settlements\n"
-    "/categories - show categories & emojis\n"
-    "/stats - category totals\n"
-    "/export - export CSV of all expenses\n"
-    "/reset - wipe all chat data (confirmation required)\n"
-    "Free text also attempts AI parsing and requires confirmation.\n"
-    "'~' after amounts indicates approximate FX fallback.\n"
-    "(Current: {currency})" + ("\nAI parsing enabled." if AI_ENABLED else "\nAI parsing disabled.")
-)
 
 
 async def help_cmd(update, context):
     chat_id = update.message.chat.id
     data = load_chat(chat_id)
-    await update.message.reply_text(HELP_TEXT.replace("{currency}", data.get("currency", DEFAULT_CURRENCY)), disable_notification=True)
+    lang = data.get("language", "he")
+    he = (lang == "he")
+    if he:
+        text = T["help"].replace("{currency}", data.get("currency", DEFAULT_CURRENCY))
+    else:
+        # Build English help dynamically to reflect AI status & currency
+        text = (
+            "📘 Commands:\n"
+            "ℹ️ /help - this help.\n"
+            "🚀 /start - welcome message.\n"
+            "💱 /setcurrency [ISO3] - set base currency before first expense.\n"
+            "💰 /currency - show current currency.\n"
+            "➕ /add <amount> [ISO3] <description> - add expense.\n"
+            "🧑‍🤝‍🧑 /adduser [name] - add virtual participant or set your name.\n"
+            "👥 /users - list participants.\n"
+            "🧾 /list [page] - list expenses (pagination arrows).\n"
+            "⚖️ /bal - weighted balances.\n"
+            "🤝 /settle - settlement suggestions.\n"
+            "🏷️ /categories - list categories.\n"
+            "📊 /stats - category totals.\n"
+            "📤 /export - export CSV.\n"
+            "🌐 /lang - toggle language (Hebrew/English).\n"
+            "♻️ /reset - wipe all data (confirmation).\n"
+            "✍️ Free text like '120 ils falafel' creates a pending expense for confirmation.\n"
+            f"(Current currency: {data.get('currency', DEFAULT_CURRENCY)})" + ("\n🤖 AI parsing enabled." if AI_ENABLED else "\n🤖 AI parsing disabled (missing GEMINI_API_KEY).")
+        )
+    await update.message.reply_text(text, disable_notification=True)
+
+async def lang_cmd(update, context):
+    msg = update.message
+    chat_id = msg.chat.id
+    data = load_chat(chat_id)
+    current = data.get("language", "he")
+    new_lang = "en" if current == "he" else "he"
+    data["language"] = new_lang
+    save_chat(data)
+    global HE_IL
+    HE_IL = (new_lang == "he")  # legacy for code paths still using HE_IL
+    if new_lang == "he":
+        await msg.reply_text("✅ השפה הוחלפה לעברית.", disable_notification=True)
+    else:
+        await msg.reply_text("✅ Language switched to English.", disable_notification=True)
+    # Show help in new language
+    await help_cmd(update, context)
 
 
 async def categories_cmd(update, context):
@@ -560,14 +586,16 @@ async def free_text_handler(update: Update, context):
         await msg.reply_text(T["name_saved"].format(name=name) if HE_IL else f"Saved name: {name}", disable_notification=True)
         return
     data = load_chat(chat_id)
+    lang = data.get("language", "he")
+    he = (lang == "he")
     if not AI_ENABLED and chat_id not in _notified_limited_mode:
-        await msg.reply_text(T["ai_disabled"] if HE_IL else "AI parsing disabled. Using basic parser.", disable_notification=True)
+        await msg.reply_text(T["ai_disabled"] if he else "AI parsing disabled. Using basic parser.", disable_notification=True)
         _notified_limited_mode.add(chat_id)
     parsed = await ai_parse_expense(msg.text, data.get("currency", DEFAULT_CURRENCY))
     log_ai.debug("free_text parsed amount=%s desc=%s cat=%s", parsed.get("amount"), parsed.get("description"), parsed.get("category"))
     amount = parsed.get("amount")
     if not amount:
-        await msg.reply_text(T["amount_not_found"] if HE_IL else "Couldn't detect an amount.", disable_notification=True)
+        await msg.reply_text(T["amount_not_found"] if he else "Couldn't detect an amount.", disable_notification=True)
         return
     ensure_user(data, msg.from_user)
     participants = list(map(int, data["users"].keys()))
@@ -628,8 +656,8 @@ async def free_text_handler(update: Update, context):
             preview = T["auto_added"].format(id=preview_id, amt=amount, cur=chat_cur,
                                              cat=pending['category'], desc=pending['description'])
             preview = f"{CATEGORY_EMOJI.get(pending['category'],'')} " + preview
-    preview += "\nמאשר?"
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ אישור", callback_data="AIEXP:ACCEPT"), InlineKeyboardButton("❌ ביטול", callback_data="AIEXP:CANCEL")]])
+    preview += ("\nמאשר?" if he else "\nApprove?")
+    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ אישור" if he else "✅ Yes", callback_data="AIEXP:ACCEPT"), InlineKeyboardButton("❌ ביטול" if he else "❌ Cancel", callback_data="AIEXP:CANCEL")]])
     await msg.reply_text(preview, reply_markup=keyboard, disable_notification=True)
 
 
@@ -1033,6 +1061,7 @@ def main():
     app.add_handler(CommandHandler("reset", reset_chat))
     app.add_handler(CommandHandler("adduser", adduser_cmd))
     app.add_handler(CommandHandler("users", users_cmd))
+    app.add_handler(CommandHandler("lang", lang_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):  # pragma: no cover

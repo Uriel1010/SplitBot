@@ -1,6 +1,6 @@
 # SplitBot
 
-Telegram-first expense splitting bot (Hebrew-first) with multi-currency conversion, optional AI free-text parsing (Gemini), emoji categories, weighted share support (schema + balance logic), and SQLite persistence. Lightweight single-container deployment.
+Telegram-first expense splitting bot (Hebrew ↔ English toggle) with multi-currency conversion, optional AI free-text parsing (Gemini), emoji categories, weighted share engine (schema + balance logic), and SQLite persistence. Lightweight single-container deployment.
 
 ## ✨ Features
 - ➕ Add expenses via `/add` or free-text (AI or regex parser).
@@ -12,7 +12,7 @@ Telegram-first expense splitting bot (Hebrew-first) with multi-currency conversi
 - 📄 Pagination for `/list` with inline navigation.
 - 📤 `/export` full CSV including FX metadata & participants.
 - 👥 Virtual participants (negative IDs) + interactive name capture.
-- 🇮🇱 Hebrew localization (planned toggle to English).
+- � Live language toggle `/lang` (Hebrew ↔ English).
 - 🪵 Structured logging with separate FX and AI loggers.
 
 ## 🏗 Architecture (Current Simplified)
@@ -63,7 +63,10 @@ See `.env.example`.
 | `/export` | CSV export |
 | (free text) | Parse & confirm expense |
 
-Planned: `/setweight`, `/weights`, `/stats30`, `/monthly`, `/lang`.
+Planned: `/setweight`, `/weights`, `/stats30`, `/monthly`.
+
+### Localization
+Use `/lang` anytime to switch the chat language. The choice is stored per chat (currently in JSON; DB column planned). Most user-facing strings are localized; a few edge responses will be migrated to the translation layer in upcoming refactors.
 
 ## 🗃 Data Model (SQLite)
 Tables include `users(weight)`, `expenses(original_amount, original_currency, fx_rate, fx_fallback)`, `expense_participants(weight)` enabling proportional splits.
@@ -75,8 +78,8 @@ Tables include `users(weight)`, `expenses(original_amount, original_currency, fx
 4. Static approximate table (fallback)
 6h cache. Approximate conversions in lists get a `~` marker.
 
-## 🧮 Balances (Weighted)
-For each expense: payer credited full amount; each participant debited their proportional weight share. Amounts rounded to 2 decimals per user. Historical integrity preserved via stored weight snapshot per expense.
+## 🧮 Balances (Weighted Engine)
+Every expense stores a snapshot of participant weights (already in DB). Current user commands still assume equal weights until `/setweight` & `/weights` are added. Once implemented, future weight changes won’t retroactively alter past expenses because of the snapshot model.
 
 ## 🧪 Future Test Coverage (Planned)
 - Currency detection & fallback flag
@@ -85,11 +88,11 @@ For each expense: payer credited full amount; each participant debited their pro
 - AI parse fallback to regex
 
 ## 🗺 Roadmap Snapshot
-- Weight commands & display
-- Language toggle & English pack
-- JSON → DB migration helper
-- 30‑day stats & monthly summaries
-- More granular participant selection per expense
+- Weight commands: `/setweight`, `/weights` UI + validation
+- JSON → DB migration helper (one-off import of legacy chat JSONs)
+- Time windows: `/stats30`, `/monthly` summaries
+- Per-expense participant selection (custom splits)
+- Full translation extraction & English coverage for every minor string
 
 ## 🤝 Contributing
 See `CONTRIBUTING.md`. Please open an issue before large refactors. MIT license.
