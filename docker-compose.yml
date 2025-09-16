@@ -1,0 +1,12 @@
+services:
+  splitbot:
+    build: .
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
+      DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+

@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environments
+.env
+.env.*
+venv/
+.venv/
+ENV/
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+
+# VSCode / IDE
+.vscode/
+.idea/
+
+# Logs & runtime
+*.log
+logs/
+
+# Local data & DB artifacts
+data/
+
+*.sqlite
+
+# Receipts (keep placeholder if needed)
+data/receipts/*
+!data/receipts/.gitkeep
+
+# Node (future UI assets)
+node_modules/
+
+# Tests / coverage
+.pytest_cache/
+.coverage*
+htmlcov/
+
+# Migrations compiled artifacts
+migrations/versions/*.pyc
+
+# Docker exports
+*.tar
