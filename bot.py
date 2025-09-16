@@ -103,16 +103,22 @@ HE_IL = True
 T = {
     "start": "👋 היי! אני הבוט לפיצול הוצאות. כתוב /help כדי לראות פקודות.",
     "help": (
-        "📘 פקודות:\n"
-        "💱 /setcurrency [ISO3] - קביעת מטבע לפני הוצאה ראשונה.\n"
+        "📘 פקודות קיימות:\n"
+        "ℹ️ /help - עזרה זו.\n"
+        "� /start - הודעת פתיחה.\n"
+        "�💱 /setcurrency [ISO3] - קביעת מטבע לפני הוצאה ראשונה.\n"
         "💰 /currency - הצגת המטבע הנוכחי.\n"
         "➕ /add <סכום> [ISO3] <תיאור> - הוספת הוצאה.\n"
-        "🧾 /list - הוצאות אחרונות.\n"
-        "⚖️ /bal - מאזנים.\n"
+        "🧑‍🤝‍🧑 /adduser [שם] - הוספת משתתף וירטואלי או שמך.\n"
+        "👥 /users - רשימת משתתפים.\n"
+        "🧾 /list [עמוד] - הוצאות (דפדוף עם חצים).\n"
+        "⚖️ /bal - מאזנים משוקללים.\n"
         "🤝 /settle - הצעות לסגירת חובות.\n"
-        "🏷️ /categories - קטגוריות.\n"
-        "♻️ /reset - איפוס (מחק הכל!).\n"
-        "✍️ טקסט חופשי (לדוגמה: '120 שח על מצות') מוסיף הוצאה.\n"
+        "🏷️ /categories - רשימת קטגוריות.\n"
+        "📊 /stats - סיכום לפי קטגוריה.\n"
+        "📤 /export - יצוא CSV.\n"
+        "♻️ /reset - איפוס מוחק הכל.\n"
+        "✍️ טקסט חופשי (למשל: '120 שח על מצות') יוצר הוצאה ממתינה לאישור.\n"
         "(מטבע נוכחי: {currency})" + ("\n🤖 ניתוח AI פעיל." if AI_ENABLED else "\n🤖 ניתוח AI כבוי (חסר GEMINI_API_KEY).")
     ),
     "choose_currency": "מטבע נוכחי: {cur}. בחר חדש (נחסם אחרי הוצאה ראשונה):",
@@ -454,18 +460,23 @@ async def start(update, context):
 
 
 HELP_TEXT = T["help"] if HE_IL else (
-    "Commands:\n"
-    "/setcurrency [ISO3]  - set base currency (before first expense)\n"
-    "/add <amount> [ISO3] <description>  - add expense, optional foreign currency\n"
-    "/adduser  - interactive name capture (or add virtual users)\n"
-    "/users  - list participants\n"
-    "/list  - paginated expenses (use buttons)\n"
-    "/bal   - current balances\n"
+    "Available commands:\n"
+    "/help - this help\n"
+    "/start - welcome message\n"
+    "/setcurrency [ISO3] - set base currency (before first expense)\n"
+    "/currency - show current base currency\n"
+    "/add <amount> [ISO3] <description> - add expense (optional foreign currency)\n"
+    "/adduser [name] - add a virtual participant or set your display name\n"
+    "/users - list participants\n"
+    "/list [page] - paginated expenses (navigate with arrows)\n"
+    "/bal - weighted balances\n"
     "/settle - suggested settlements\n"
-    "/export - CSV export of all expenses\n"
     "/categories - show categories & emojis\n"
-    "Free text message also attempts AI parsing.\n"
-    "Legend: '~' after converted amount indicates approximate FX fallback.\n"
+    "/stats - category totals\n"
+    "/export - export CSV of all expenses\n"
+    "/reset - wipe all chat data (confirmation required)\n"
+    "Free text also attempts AI parsing and requires confirmation.\n"
+    "'~' after amounts indicates approximate FX fallback.\n"
     "(Current: {currency})" + ("\nAI parsing enabled." if AI_ENABLED else "\nAI parsing disabled.")
 )
 
