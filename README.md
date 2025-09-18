@@ -1,10 +1,10 @@
 # SplitBot
 
-Telegram-first expense splitting bot (Hebrew ↔ English toggle) with multi-currency conversion, optional AI free-text parsing (Gemini), emoji categories, weighted share engine (schema + balance logic), and SQLite persistence. Lightweight single-container deployment.
+Telegram-first expense splitting bot (Hebrew ↔ English toggle) with multi-currency conversion, optional AI free-text parsing (Gemini or Ollama), emoji categories, weighted share engine (schema + balance logic), and SQLite persistence. Lightweight single-container deployment.
 
 ## ✨ Features
 - ➕ Add expenses via `/add` or free-text (AI or regex parser).
-- 🤖 Gemini-based extraction (amount, category, description) with confirmation inline keyboard.
+- 🤖 AI extraction (Gemini API or local/remote Ollama) with confirmation inline keyboard.
 - 💱 Multi-currency detection: ILS/₪/ש"ח/שח/nis + many ISO codes. Conversion using `yfinance` with layered fallback (inverse, USD bridge, static). Approximate conversions flagged with `~`.
 - 🗂 Categories + emojis; `/stats` category totals with percentages.
 - ⚖️ Balances use per-expense weight snapshots (weights column already stored; commands coming soon).
@@ -40,11 +40,17 @@ $env:TELEGRAM_BOT_TOKEN="123:token"; python bot.py
 |-----|-------------|---------|
 | `TELEGRAM_BOT_TOKEN` | Bot token (required) | — |
 | `DEFAULT_CURRENCY` | Base currency for new chats | `USD` |
-| `GEMINI_API_KEY` | Enable AI parsing | (disabled) |
+| `GEMINI_API_KEY` | Enable Gemini AI parsing (if AI_PROVIDER=GEMINI or unset) | (disabled) |
 | `GEMINI_MODEL` | Gemini model | `gemini-1.5-flash` |
+| `AI_PROVIDER` | `GEMINI` or `OLLAMA` (auto = GEMINI if key present) | (auto) |
+| `OLLAMA_BASE_URL` | Ollama server base URL | `http://localhost:11434` |
+| `OLLAMA_MODEL` | Ollama model name | `qwen3:8b` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 
 See `.env.example`.
+
+### AI Provider Selection
+Set `AI_PROVIDER=OLLAMA` to use a remote/local Ollama instance (e.g. `http://192.168.1.20:11434`) with `OLLAMA_MODEL` (defaults `qwen3:8b`). If `AI_PROVIDER` is unset and a `GEMINI_API_KEY` exists, Gemini is used. If neither is configured, the bot falls back to a lightweight regex parser.
 
 ## 💬 Commands
 | Command | Purpose |

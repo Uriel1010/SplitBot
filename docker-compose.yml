@@ -6,6 +6,11 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-1.5-flash}
       DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-USD}
+      AI_PROVIDER: ${AI_PROVIDER:-}
+      # Use host.docker.internal so the container can reach an Ollama instance running on the host OS.
+      # Override in .env if you run Ollama as another container service (e.g., http://ollama:11434).
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:8b}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

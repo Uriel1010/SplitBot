@@ -50,13 +50,96 @@ DEFAULT_CURRENCY = os.getenv("DEFAULT_CURRENCY", "USD").upper()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash").strip()
 
-AI_ENABLED = bool(GEMINI_API_KEY and genai is not None)
-if AI_ENABLED:
+# Ollama provider configuration
+AI_PROVIDER = (os.getenv("AI_PROVIDER") or ("GEMINI" if GEMINI_API_KEY else "" )).upper().strip()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:8b").strip()
+
+# Unconditionally rewrite localhost/127.* when using OLLAMA to improve container ↔ host connectivity.
+if AI_PROVIDER == "OLLAMA" and ("localhost" in OLLAMA_BASE_URL or "127.0.0.1" in OLLAMA_BASE_URL):
+    _orig = OLLAMA_BASE_URL
+    OLLAMA_BASE_URL = OLLAMA_BASE_URL.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
+    log_ai.info("Rewrote OLLAMA_BASE_URL %s -> %s", _orig, OLLAMA_BASE_URL)
+
+AI_ENABLED = False
+AI_PROVIDER_ACTIVE = None  # 'GEMINI' or 'OLLAMA' or None
+if AI_PROVIDER == "GEMINI" and GEMINI_API_KEY and genai is not None:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
+        AI_ENABLED = True
+        AI_PROVIDER_ACTIVE = "GEMINI"
     except Exception as e:  # pragma: no cover
         logging.warning("Failed to configure Gemini: %s", e)
-        AI_ENABLED = False
+elif AI_PROVIDER == "OLLAMA":
+    AI_ENABLED = True
+    AI_PROVIDER_ACTIVE = "OLLAMA"
+else:
+    AI_ENABLED = False
+    AI_PROVIDER_ACTIVE = None
+
+# Simple health check cache for Ollama provider
+_AI_HEALTH_LAST_CHECK = 0.0
+_AI_HEALTH_OK = False
+_AI_HEALTH_TTL = 300  # seconds
+_AI_LAST_ERROR: Optional[str] = None
+
+def _check_ollama_health(force: bool = False) -> bool:
+    """Return True if current AI provider is healthy (or not Ollama).
+    For Ollama: GET /api/tags (lightweight) every _AI_HEALTH_TTL seconds.
+    """
+    global _AI_HEALTH_LAST_CHECK, _AI_HEALTH_OK
+    if AI_PROVIDER_ACTIVE != "OLLAMA":
+        return AI_ENABLED and bool(AI_PROVIDER_ACTIVE)
+    now = time.time()
+    if not force and (now - _AI_HEALTH_LAST_CHECK) < _AI_HEALTH_TTL:
+        return _AI_HEALTH_OK
+    _AI_HEALTH_LAST_CHECK = now
+    global OLLAMA_BASE_URL
+    try:
+        import http.client
+        from urllib.parse import urlparse
+        def _probe(base: str) -> Tuple[bool, Optional[str]]:
+            try:
+                u = urlparse(base)
+                conn = http.client.HTTPConnection(u.hostname, u.port or (80 if u.scheme == 'http' else 443), timeout=5)
+                conn.request("GET", "/api/tags")
+                resp = conn.getresponse()
+                if resp.status == 200:
+                    return True, None
+                return False, f"HTTP {resp.status}"
+            except Exception as ex:  # pragma: no cover
+                return False, f"{type(ex).__name__}: {ex}"
+        ok, err = _probe(OLLAMA_BASE_URL)
+        if not ok and err:
+            log_ai.debug("Primary Ollama probe failed base=%s err=%s", OLLAMA_BASE_URL, err)
+        if not ok:
+            # second chance: ensure host.docker.internal variant tried (already rewritten earlier, but just in case custom URL given)
+            alt = OLLAMA_BASE_URL
+            if "host.docker.internal" not in alt:
+                alt = alt.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
+            if alt != OLLAMA_BASE_URL:
+                ok2, err2 = _probe(alt)
+                if ok2:
+                    log_ai.info("Switched OLLAMA_BASE_URL to %s after failed probe", alt)
+                    OLLAMA_BASE_URL = alt
+                    ok = True
+                    err = None
+                else:
+                    log_ai.debug("Alt Ollama probe failed alt=%s err=%s", alt, err2)
+                    if err is None:
+                        err = err2
+        _AI_HEALTH_OK = ok
+        if not ok:
+            _AI_LAST_ERROR = err or "unknown error"
+            log_ai.warning("Ollama health unresolved base=%s error=%s", OLLAMA_BASE_URL, _AI_LAST_ERROR)
+        else:
+            _AI_LAST_ERROR = None
+        return ok
+    except Exception as e:  # pragma: no cover
+        _AI_LAST_ERROR = f"{type(e).__name__}: {e}"
+        log_ai.warning("Ollama health exception base=%s error=%s", OLLAMA_BASE_URL, _AI_LAST_ERROR)
+        _AI_HEALTH_OK = False
+        return False
 
 # Categories & emojis
 CATEGORIES = [
@@ -116,11 +199,12 @@ T = {
         "🤝 /settle - הצעות לסגירת חובות.\n"
         "🏷️ /categories - רשימת קטגוריות.\n"
         "📊 /stats - סיכום לפי קטגוריה.\n"
+    "🤖 /ai - סטטוס ספק ה-AI.\n"
         "📤 /export - יצוא CSV.\n"
         "🌐 /lang - החלפת שפה (עברית/English).\n"
         "♻️ /reset - איפוס מוחק הכל.\n"
         "✍️ טקסט חופשי (למשל: '120 שח על מצות') יוצר הוצאה ממתינה לאישור.\n"
-        "(מטבע נוכחי: {currency})" + ("\n🤖 ניתוח AI פעיל." if AI_ENABLED else "\n🤖 ניתוח AI כבוי (חסר GEMINI_API_KEY).")
+        "(מטבע נוכחי: {currency})"
     ),
     "choose_currency": "מטבע נוכחי: {cur}. בחר חדש (נחסם אחרי הוצאה ראשונה):",
     "usage_setcurrency": "שימוש: /setcurrency <ISO3>",
@@ -172,11 +256,22 @@ COMMON_CURRENCIES = [
 ]
 
 # Map lowercase tokens / symbols -> ISO
+"""Currency synonyms map.
+NOTE: We add multiple variants for Hebrew shekel forms including different quotes and punctuation.
+We intentionally keep shorter tokens like 'שח' but later when cleaning description we remove an
+isolated trailing currency word so it does not appear twice.
+"""
 CURRENCY_SYNONYMS = {
     "₪": "ILS",
-    "שח": "ILS",
-    "ש""ח": "ILS",  # escaped form of ש"ח
+    "שח": "ILS",        # common no-quote form
+    "ש״ח": "ILS",       # Hebrew double quote char U+05F4
+    "ש""ח": "ILS",      # ASCII quotes variant appears in source escaping
     "ש""ח.": "ILS",
+    "ש""ח,": "ILS",
+    "ש""ח?": "ILS",
+    "ש""ח!": "ILS",
+    "ש""ח\n": "ILS",
+    "ש""ח\r": "ILS",
     "שקל": "ILS",
     "שקלים": "ILS",
     "שקל חדש": "ILS",
@@ -338,6 +433,8 @@ def detect_currency_token(text: str) -> Optional[str]:
         log_currency.debug("detect_currency_token: empty text")
         return None
     lower = text.lower()
+    # Normalize Hebrew quotes variant for detection (convert U+05F4 to straight quotes pattern we keyed)
+    lower = lower.replace("ש״ח", "ש""ח")
     # 1. number + code or code + number (allow punctuation) e.g. 120usd, usd120, 120 usd, usd 120
     num_code_pattern = re.compile(r"(?:(\d+[\.,]?\d*)\s*([a-z]{3}))|(([a-z]{3})\s*(\d+[\.,]?\d*))")
     for m in num_code_pattern.finditer(lower):
@@ -353,8 +450,9 @@ def detect_currency_token(text: str) -> Optional[str]:
     if re.search(r"\d+\s*₪", text):
         log_currency.debug("digits+₪ immediate match text=%s", text)
         return "ILS"
-    # 3. symbols / synonyms substring search
-    for key, iso in CURRENCY_SYNONYMS.items():
+    # 3. symbols / synonyms substring search (prefer longer keys first to avoid partial overshadow)
+    for key in sorted(CURRENCY_SYNONYMS.keys(), key=len, reverse=True):
+        iso = CURRENCY_SYNONYMS[key]
         if key and key in lower:
             log_currency.debug("symbol/synonym match key=%s iso=%s text=%s", key, iso, text)
             return iso
@@ -469,8 +567,16 @@ async def help_cmd(update, context):
     data = load_chat(chat_id)
     lang = data.get("language", "he")
     he = (lang == "he")
+    currency = data.get("currency", DEFAULT_CURRENCY)
     if he:
-        text = T["help"].replace("{currency}", data.get("currency", DEFAULT_CURRENCY))
+        text = T["help"].replace("{currency}", currency)
+        if AI_PROVIDER_ACTIVE == "GEMINI":
+            text += "\n🤖 מצב AI: Gemini פעיל."
+        elif AI_PROVIDER_ACTIVE == "OLLAMA":
+            healthy = _check_ollama_health()
+            text += f"\n🤖 מצב AI: Ollama ({OLLAMA_MODEL}) {'פעיל' if healthy else 'לא זמין – מעבר לניתוח בסיסי'}"
+        else:
+            text += "\n🤖 מצב AI: כבוי (Regex בלבד)."
     else:
         # Build English help dynamically to reflect AI status & currency
         text = (
@@ -487,13 +593,43 @@ async def help_cmd(update, context):
             "🤝 /settle - settlement suggestions.\n"
             "🏷️ /categories - list categories.\n"
             "📊 /stats - category totals.\n"
+            "🤖 /ai - AI provider status.\n"
             "📤 /export - export CSV.\n"
             "🌐 /lang - toggle language (Hebrew/English).\n"
             "♻️ /reset - wipe all data (confirmation).\n"
             "✍️ Free text like '120 ils falafel' creates a pending expense for confirmation.\n"
-            f"(Current currency: {data.get('currency', DEFAULT_CURRENCY)})" + ("\n🤖 AI parsing enabled." if AI_ENABLED else "\n🤖 AI parsing disabled (missing GEMINI_API_KEY).")
+            f"(Current currency: {currency})"
         )
+        if AI_PROVIDER_ACTIVE == "GEMINI":
+            text += f"\n🤖 AI: Gemini model={GEMINI_MODEL} (healthy)"
+        elif AI_PROVIDER_ACTIVE == "OLLAMA":
+            healthy = _check_ollama_health()
+            text += f"\n🤖 AI: Ollama model={OLLAMA_MODEL} base={OLLAMA_BASE_URL} status={'healthy' if healthy else 'unreachable'}"
+        else:
+            text += "\n🤖 AI: disabled (regex fallback)."
     await update.message.reply_text(text, disable_notification=True)
+
+async def ai_status_cmd(update, context):
+    msg = update.message
+    chat_id = msg.chat.id
+    data = load_chat(chat_id)
+    lang = data.get("language", "he")
+    he = (lang == "he")
+    if AI_PROVIDER_ACTIVE == "GEMINI" and AI_ENABLED:
+        text = ("ספק AI: Gemini\nמודל: " + GEMINI_MODEL + "\nמצב: פעיל") if he else f"AI Provider: Gemini\nModel: {GEMINI_MODEL}\nStatus: active"
+    elif AI_PROVIDER_ACTIVE == "OLLAMA" and AI_ENABLED:
+        healthy = _check_ollama_health(force=True)
+        if he:
+            text = f"ספק AI: Ollama\nמודל: {OLLAMA_MODEL}\nכתובת: {OLLAMA_BASE_URL}\nמצב: {'פעיל' if healthy else 'לא זמין'}"
+            if not healthy and _AI_LAST_ERROR:
+                text += f"\nשגיאה: {_AI_LAST_ERROR}"
+        else:
+            text = f"AI Provider: Ollama\nModel: {OLLAMA_MODEL}\nBase URL: {OLLAMA_BASE_URL}\nStatus: {'healthy' if healthy else 'unreachable'}"
+            if not healthy and _AI_LAST_ERROR:
+                text += f"\nError: {_AI_LAST_ERROR}"
+    else:
+        text = "AI כבוי: שימוש במנתח בסיסי." if he else "AI disabled: using regex parser."
+    await msg.reply_text(text, disable_notification=True)
 
 async def lang_cmd(update, context):
     msg = update.message
@@ -546,26 +682,67 @@ async def ai_parse_expense(text: str, chat_currency: str) -> Dict[str, Any]:
         desc = text.replace(m.group(0), "").strip() or "(no description)"
         cat = normalize_category(desc.split()[0]) if desc else "other"
         return {"amount": round(amt, 2), "description": desc, "category": cat}
-    if not AI_ENABLED:
+    if not AI_ENABLED or not AI_PROVIDER_ACTIVE:
         return regex_fallback() or {"amount": None, "description": text, "category": "other"}
+    # Health gate for Ollama
+    if AI_PROVIDER_ACTIVE == "OLLAMA" and not _check_ollama_health():
+        return regex_fallback() or {"amount": None, "description": text, "category": "other"}
+
     prompt = (
-        "Extract expense JSON strictly. Fields: amount (number), description (short), category (one of food, groceries, transport, entertainment, travel, utilities, health, rent, other).\n"
-        f"Currency context: {chat_currency}.\nMessage: {text}\nRespond ONLY with JSON object."
+        "You are an expense extraction assistant. Return ONLY a JSON object with keys: "
+        "amount (number), description (string), category (one of food, groceries, transport, entertainment, travel, utilities, health, rent, other). "
+        f"If unsure, pick 'other'. Currency context: {chat_currency}. Message: {text}"
     )
-    try:
-        model = genai.GenerativeModel(GEMINI_MODEL)
-        resp = await asyncio.to_thread(model.generate_content, prompt)
-        raw = getattr(resp, 'text', '').strip()
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            data = _json.loads(match.group(0))
-            amount = data.get("amount")
-            desc = data.get("description") or "(no description)"
-            cat = normalize_category(data.get("category", ""))
-            if isinstance(amount, (int, float)) and amount > 0:
-                return {"amount": round(float(amount), 2), "description": desc, "category": cat}
-    except Exception as e:  # pragma: no cover
-        logging.warning("AI parse failed: %s", e)
+    if AI_PROVIDER_ACTIVE == "GEMINI":
+        try:
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            resp = await asyncio.to_thread(model.generate_content, prompt)
+            raw = getattr(resp, 'text', '').strip()
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                data = _json.loads(match.group(0))
+                amount = data.get("amount")
+                desc = data.get("description") or "(no description)"
+                cat = normalize_category(data.get("category", ""))
+                if isinstance(amount, (int, float)) and amount > 0:
+                    return {"amount": round(float(amount), 2), "description": desc, "category": cat}
+        except Exception as e:  # pragma: no cover
+            logging.warning("Gemini parse failed: %s", e)
+    elif AI_PROVIDER_ACTIVE == "OLLAMA":
+        # Ollama local API: POST /api/generate {model,prompt,stream:false}
+        try:
+            import http.client, urllib.parse, json as __json
+            from urllib.parse import urlparse
+            u = urlparse(OLLAMA_BASE_URL)
+            path = "/api/generate"
+            payload = __json.dumps({
+                "model": OLLAMA_MODEL,
+                "prompt": prompt + "\nReturn ONLY raw JSON.",
+                "stream": False,
+            })
+            conn = http.client.HTTPConnection(u.hostname, u.port or (80 if u.scheme == 'http' else 443), timeout=15)
+            conn.request("POST", path, body=payload, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            if resp.status == 200:
+                body = resp.read().decode("utf-8", errors="ignore")
+                # Ollama returns JSON with 'response' field containing the model text
+                try:
+                    outer = __json.loads(body)
+                    raw_out = outer.get("response", "")
+                except Exception:
+                    raw_out = body
+                match = re.search(r"\{.*\}", raw_out, re.DOTALL)
+                if match:
+                    data = _json.loads(match.group(0))
+                    amount = data.get("amount")
+                    desc = data.get("description") or "(no description)"
+                    cat = normalize_category(data.get("category", ""))
+                    if isinstance(amount, (int, float)) and amount > 0:
+                        return {"amount": round(float(amount), 2), "description": desc, "category": cat}
+            else:
+                logging.warning("Ollama HTTP %s", resp.status)
+        except Exception as e:  # pragma: no cover
+            logging.warning("Ollama parse failed: %s", e)
     return regex_fallback() or {"amount": None, "description": text, "category": "other"}
 
 
@@ -588,13 +765,30 @@ async def free_text_handler(update: Update, context):
     data = load_chat(chat_id)
     lang = data.get("language", "he")
     he = (lang == "he")
-    if not AI_ENABLED and chat_id not in _notified_limited_mode:
-        await msg.reply_text(T["ai_disabled"] if he else "AI parsing disabled. Using basic parser.", disable_notification=True)
+    if (not AI_ENABLED or (AI_PROVIDER_ACTIVE == "OLLAMA" and not _check_ollama_health())) and chat_id not in _notified_limited_mode:
+        if AI_PROVIDER_ACTIVE == "OLLAMA" and AI_ENABLED:
+            warn = "שרת Ollama לא זמין – מעבר לניתוח בסיסי." if he else "Ollama unreachable – falling back to basic parser."
+        else:
+            warn = T["ai_disabled"] if he else "AI parsing disabled. Using basic parser."
+        await msg.reply_text(warn, disable_notification=True)
         _notified_limited_mode.add(chat_id)
+    # Show a transient "thinking" indicator if AI provider active & healthy (Gemini or Ollama reachable)
+    thinking_msg = None
+    need_ai = AI_ENABLED and AI_PROVIDER_ACTIVE and not (AI_PROVIDER_ACTIVE == "OLLAMA" and not _check_ollama_health())
+    if need_ai:
+        try:
+            thinking_msg = await msg.reply_text("🤖 חושב..." if he else "🤖 Thinking...", disable_notification=True)
+        except Exception as _e:  # pragma: no cover
+            thinking_msg = None
     parsed = await ai_parse_expense(msg.text, data.get("currency", DEFAULT_CURRENCY))
     log_ai.debug("free_text parsed amount=%s desc=%s cat=%s", parsed.get("amount"), parsed.get("description"), parsed.get("category"))
     amount = parsed.get("amount")
     if not amount:
+        if thinking_msg:
+            try:
+                await thinking_msg.delete()
+            except Exception:  # pragma: no cover
+                pass
         await msg.reply_text(T["amount_not_found"] if he else "Couldn't detect an amount.", disable_notification=True)
         return
     ensure_user(data, msg.from_user)
@@ -603,8 +797,29 @@ async def free_text_handler(update: Update, context):
     if payer_id not in participants:
         participants.append(payer_id)
     # Currency detection & conversion for free text similar to /add
+    # Detect currency FIRST on the original user message to avoid losing a trailing token like 'דולר'
+    original_message_text = msg.text
+    initial_detected = detect_currency_token(original_message_text)
     description = parsed.get("description", "(no description)")
-    detected_cur = detect_currency_token(description) or data.get("currency", DEFAULT_CURRENCY)
+    # Strip trailing currency word/symbol duplicates (Hebrew forms) so they don't pollute description output
+    desc_tokens = description.strip().split()
+    if desc_tokens:
+        last = desc_tokens[-1].lower()
+        last_norm = last.replace("ש״ח", "ש""ח")
+        if last_norm in CURRENCY_SYNONYMS or last_norm in {c.lower() for c in COMMON_CURRENCIES}:
+            desc_tokens = desc_tokens[:-1]
+    # After removing a trailing currency token we may have a dangling Hebrew preposition 'ב' (meaning 'for/at') or other short connector.
+    connectors = {"ב", "על", "עם", "for", "at", "on", "to"}
+    while desc_tokens and desc_tokens[-1].lower() in connectors:
+        desc_tokens.pop()
+    if desc_tokens:
+        description = " ".join(desc_tokens).strip()
+    else:
+        description = "(no description)"
+    if initial_detected:
+        detected_cur = initial_detected
+    else:
+        detected_cur = detect_currency_token(description) or data.get("currency", DEFAULT_CURRENCY)
     chat_cur = data.get("currency", DEFAULT_CURRENCY)
     original_amount = round(amount, 2)
     original_currency = detected_cur
@@ -634,29 +849,40 @@ async def free_text_handler(update: Update, context):
     PENDING_EXPENSES[chat_id] = pending
     preview_id = get_next_expense_id(chat_id)
     if rate_used:
+        # Use final_amount (converted) for primary amount display; always show base chat currency (chat_cur)
         preview = T["auto_added_conv"].format(
-            id=preview_id, amt=amount, cur=chat_cur,
+            id=preview_id, amt=final_amount, cur=chat_cur,
             oamt=original_amount, ocur=original_currency, rate=rate_used,
-            cat=pending['category'], desc=pending['description'])
+            cat=pending['category'], desc=pending['description']
+        )
+        # Add approximate marker if FX fallback strategy used (bridged/static)
+        if fx_fallback:
+            preview = preview.replace(f"{final_amount:.2f} {chat_cur}", f"{final_amount:.2f}~ {chat_cur}")
         preview = f"{CATEGORY_EMOJI.get(pending['category'],'')} " + preview
     else:
         # If detected currency differs but we lacked a rate, still show original for clarity
         if original_currency != chat_cur:
             if fx_fallback:
-                preview = T["auto_added"].format(id=preview_id, amt=amount, cur=chat_cur,
-                                                 cat=pending['category'], desc=pending['description']) + \
+                preview = T["auto_added"].format(id=preview_id, amt=final_amount, cur=chat_cur,
+                                                  cat=pending['category'], desc=pending['description']) + \
                           f" (מקור: {original_amount:.2f} {original_currency} {T['approx_rate']})"
                 preview = f"{CATEGORY_EMOJI.get(pending['category'],'')} " + preview
             else:
-                preview = T["auto_added"].format(id=preview_id, amt=amount, cur=chat_cur,
-                                                 cat=pending['category'], desc=pending['description']) + \
+                preview = T["auto_added"].format(id=preview_id, amt=final_amount, cur=chat_cur,
+                                                  cat=pending['category'], desc=pending['description']) + \
                           f" (מקור: {original_amount:.2f} {original_currency} ללא המרה)"
                 preview = f"{CATEGORY_EMOJI.get(pending['category'],'')} " + preview
         else:
-            preview = T["auto_added"].format(id=preview_id, amt=amount, cur=chat_cur,
-                                             cat=pending['category'], desc=pending['description'])
+            preview = T["auto_added"].format(id=preview_id, amt=final_amount, cur=chat_cur,
+                                              cat=pending['category'], desc=pending['description'])
             preview = f"{CATEGORY_EMOJI.get(pending['category'],'')} " + preview
     preview += ("\nמאשר?" if he else "\nApprove?")
+    # Remove thinking indicator before sending preview
+    if thinking_msg:
+        try:
+            await thinking_msg.delete()
+        except Exception:  # pragma: no cover
+            pass
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ אישור" if he else "✅ Yes", callback_data="AIEXP:ACCEPT"), InlineKeyboardButton("❌ ביטול" if he else "❌ Cancel", callback_data="AIEXP:CANCEL")]])
     await msg.reply_text(preview, reply_markup=keyboard, disable_notification=True)
 
@@ -1050,6 +1276,14 @@ def main():
         )
     # Initialize database
     init_db(DEFAULT_CURRENCY)
+    # Log AI provider selection
+    if AI_PROVIDER_ACTIVE:
+        if AI_PROVIDER_ACTIVE == "OLLAMA":
+            log_ai.info("AI provider: %s model=%s base=%s", AI_PROVIDER_ACTIVE, OLLAMA_MODEL, OLLAMA_BASE_URL)
+        elif AI_PROVIDER_ACTIVE == "GEMINI":
+            log_ai.info("AI provider: %s model=%s", AI_PROVIDER_ACTIVE, GEMINI_MODEL)
+    else:
+        log_ai.info("AI disabled (provider not configured)")
     logging.info("[SplitBot] Starting polling bot (log level=%s)...", LOG_LEVEL)
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -1064,6 +1298,7 @@ def main():
     app.add_handler(CommandHandler("lang", lang_cmd))
     app.add_handler(CommandHandler("export", export_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("ai", ai_status_cmd))
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):  # pragma: no cover
         logging.exception("Unhandled exception: %s", context.error)
     app.add_error_handler(error_handler)
